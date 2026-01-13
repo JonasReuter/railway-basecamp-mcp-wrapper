@@ -272,6 +272,24 @@ def debug_info() -> dict:
         "mcp_routes": mcp_routes,
         "has_http_app": hasattr(mcp_instance, "http_app"),
         "has_streamable_http_app": hasattr(mcp_instance, "streamable_http_app"),
+        "info": "MCP endpoint is at /mcp - use SSE with Accept: text/event-stream header",
+    }
+
+
+@app.get("/mcp/info")
+def mcp_info() -> dict:
+    """Info endpoint for MCP - explains how to connect."""
+    return {
+        "name": "Basecamp MCP Server",
+        "version": "1.0.0",
+        "protocol": "streamable-http",
+        "transport": "sse",
+        "endpoint": "/mcp",
+        "instructions": {
+            "connection": "Connect via SSE with Accept: text/event-stream header",
+            "example_curl": "curl -N -H 'Accept: text/event-stream' https://your-domain.railway.app/mcp",
+            "langflow": "Add as MCP server with URL: https://your-domain.railway.app/mcp",
+        }
     }
 
 
