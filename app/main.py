@@ -39,8 +39,6 @@ from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.wsgi import WSGIMiddleware
-from fastapi.responses import RedirectResponse
-from fastapi import Request
 
 
 def _set_working_directory() -> None:
@@ -172,12 +170,12 @@ _configure_token_storage()
 
 # Create a FastAPI instance for the wrapper.
 #
-# Set `redirect_slashes=False` so that routes mounted without a trailing slash
-# do not automatically redirect to the slash version.  This avoids the 307
-# Temporary Redirect that otherwise occurs when clients request `/mcp` (without
-# trailing slash).  See FastAPI docs and related MCP discussions for context
-#【371287631271617†L108-L110】.
-app = FastAPI(title="Basecamp MCP (Railway Wrapper)", redirect_slashes=False)
+# Leave `redirect_slashes` at its default (True).  When we mount the upstream
+# MCP app at a path ending with a slash ("/mcp/"), FastAPI will serve both
+# "/mcp" and "/mcp/" without returning a 307 Temporary Redirect.  This avoids
+# 404 errors when clients omit or include the trailing slash and ensures
+# compatibility with tools expecting either form.
+app = FastAPI(title="Basecamp MCP (Railway Wrapper)")
 
 # Mount the upstream MCP HTTP application
 mcp_instance = _load_fastmcp()
@@ -186,24 +184,13 @@ mcp_instance = _load_fastmcp()
 # `streamable_http_app` (preferred) or `http_app`.  If neither exists we
 # cannot serve HTTP.
 if hasattr(mcp_instance, "streamable_http_app"):
-    app.mount("/mcp", mcp_instance.streamable_http_app())
+    # Mount at '/mcp/' so both '/mcp' and '/mcp/' are served when redirect_slashes=True.
+    app.mount("/mcp/", mcp_instance.streamable_http_app())
 elif hasattr(mcp_instance, "http_app"):
-    app.mount("/mcp", mcp_instance.http_app())
+    app.mount("/mcp/", mcp_instance.http_app())
 else:
     raise RuntimeError("Upstream FastMCP instance does not provide a HTTP app (no streamable_http_app/http_app)")
 
-# Provide a handler for trailing slash on the MCP route.  If a client requests
-# `/mcp/` instead of `/mcp`, FastAPI will no longer redirect automatically
-# because we disabled redirect_slashes.  Define an explicit redirect to
-# ensure both variants work and the underlying ASGI app receives the request
-# correctly.  This avoids confusion with 404s when clients include the slash.
-@app.api_route("/mcp/", methods=["GET", "POST", "DELETE", "OPTIONS", "HEAD", "PUT", "PATCH"])
-async def mcp_trailing_slash(request: Request) -> RedirectResponse:
-    # Preserve query parameters and method by redirecting with the same path
-    # minus the trailing slash.  Use a 307 temporary redirect to preserve
-    # request method for POST/PUT/DELETE.  See discussions on FastMCP
-    # routing behaviour: always use /mcp/ to prevent header stripping【371287631271617†L108-L110】.
-    return RedirectResponse(url="/mcp" + ("?" + request.url.query if request.url.query else ""), status_code=307)
 
 # Mount the upstream OAuth routes on /oauth if present
 oauth_app = _load_oauth_app()
