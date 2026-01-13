@@ -232,10 +232,25 @@ except Exception as e:
     logger.error(f"Failed to create MCP app: {e}", exc_info=True)
     raise
 
-# Create the parent FastAPI app without a lifespan. The MCP app will manage
-# its own lifespan when mounted. FastMCP's session manager will be properly
-# started and shutdown as part of the mounted app's lifecycle.
-app = FastAPI(title="Basecamp MCP (Railway Wrapper)")
+# Create the parent FastAPI app. We need to use the MCP app's lifespan
+# context manager to ensure the session manager is properly initialized.
+# We'll extract and use it if available.
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Lifespan context that initializes the MCP session manager."""
+    # Check if mcp_app has a lifespan context we can use
+    if hasattr(mcp_app, "router") and hasattr(mcp_app.router, "lifespan_context"):
+        # Use the MCP app's lifespan
+        async with mcp_app.router.lifespan_context(mcp_app) as state:
+            yield state
+    else:
+        # No lifespan available, just yield
+        yield
+
+app = FastAPI(title="Basecamp MCP (Railway Wrapper)", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -272,21 +287,13 @@ if oauth_app is not None:
         logger.warning(f"Failed to mount OAuth app: {e}")
 
 
-# Mount the MCP sub-application. Since FastMCP creates routes with the /mcp prefix
-# by default, we need to mount it at root so those routes are accessible.
-# However, Starlette's mount() at root shadows all other routes.
-# The solution is to add MCP routes directly to our app's routing table.
+# Mount the MCP sub-application at root. The MCP app has routes with /mcp prefix,
+# so they'll be accessible at /mcp. We mount at root to avoid double-prefix.
+# Our own routes (/health, /debug/info) are defined BEFORE mounting, so they
+# take precedence in Starlette's routing.
 try:
-    # Instead of mounting, add the routes directly
-    if hasattr(mcp_app, "routes"):
-        # Import the routes directly into our app
-        for route in mcp_app.routes:
-            app.routes.append(route)
-        logger.info(f"Added {len(mcp_app.routes)} routes from MCP app directly")
-    else:
-        # Fallback: mount at root, but this will shadow our routes
-        app.mount("/", mcp_app)
-        logger.info("MCP app mounted at / as fallback")
+    app.mount("/", mcp_app)
+    logger.info("MCP app mounted at / (MCP endpoints at /mcp)")
 except Exception as e:
-    logger.error(f"Failed to integrate MCP app: {e}", exc_info=True)
+    logger.error(f"Failed to mount MCP app: {e}", exc_info=True)
     raise
