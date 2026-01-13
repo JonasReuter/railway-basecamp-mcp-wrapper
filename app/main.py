@@ -38,6 +38,7 @@ import sys
 from typing import Optional
 
 from fastapi import FastAPI
+from fastapi.middleware.wsgi import WSGIMiddleware
 
 
 def _set_working_directory() -> None:
@@ -148,7 +149,9 @@ else:
 # Mount the upstream OAuth routes on /oauth if present
 oauth_app = _load_oauth_app()
 if oauth_app is not None:
-    app.mount("/oauth", oauth_app)
+    # The upstream OAuth app is a Flask (WSGI) application.  FastAPI requires
+    # an ASGI interface, so wrap it with WSGIMiddleware before mounting.
+    app.mount("/oauth", WSGIMiddleware(oauth_app))
 
 
 @app.get("/health")
