@@ -222,12 +222,14 @@ def _create_mcp_app() -> object:
 # its lifespan can be reused by the parent FastAPI application.
 mcp_app = _create_mcp_app()
 
-# Create the parent FastAPI app with the MCP app's lifespan.  Passing the
+# Create the parent FastAPI app with the MCP instance's lifespan.  Passing the
 # lifespan ensures that FastMCP's session manager is properly started and
 # shutdown alongside the wrapper.  Without this, requests to the MCP
 # endpoints may return 404 because the session manager has not been
 # initialized (see FastMCP docs on mounting MCP servers【222704054020368†L530-L543】).
-app = FastAPI(title="Basecamp MCP (Railway Wrapper)", lifespan=mcp_app.lifespan)
+# Note: We get the lifespan from the mcp_instance (FastMCP object), not from
+# mcp_app (Starlette ASGI object), which doesn't have a lifespan attribute.
+app = FastAPI(title="Basecamp MCP (Railway Wrapper)", lifespan=mcp_instance.lifespan)
 
 # Mount the MCP app at '/mcp'.  With the path override above, the MCP
 # endpoints will be available at `/mcp` (no duplicate prefix).  Starlette
