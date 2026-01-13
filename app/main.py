@@ -39,6 +39,8 @@ from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.wsgi import WSGIMiddleware
+from fastapi.responses import RedirectResponse
+from fastapi import Request
 
 
 def _set_working_directory() -> None:
@@ -74,6 +76,37 @@ def _configure_redirect_uri() -> None:
     # `oauth_app.py` for route definitions【712093837881706†L190-L263】.  We
     # therefore compute the redirect URI accordingly.
     os.environ["BASECAMP_REDIRECT_URI"] = f"{base}/oauth/auth/callback"
+
+
+def _configure_token_storage() -> None:
+    """
+    Patch the upstream token_storage module to write the OAuth tokens to our
+    desired location.  The upstream implementation writes tokens into the
+    directory containing `token_storage.py` (i.e. /opt/basecamp-mcp).  This
+    patch overrides the TOKEN_FILE attribute to point into the directory
+    specified by the environment variables TOKEN_DIR and TOKEN_FILENAME.
+
+    By doing so, tokens will be persisted in a Railway volume mounted at
+    TOKEN_DIR, ensuring they survive restarts.  If TOKEN_DIR is not set,
+    defaults to /app/data (matching earlier examples).  See upstream
+    implementation for details on TOKEN_FILE usage【568162562896650†L16-L19】.
+    """
+    # Determine target directory and file name.  Use defaults consistent with
+    # the Dockerfile and .env.example if environment variables are unset.
+    token_dir = os.environ.get("TOKEN_DIR", "/app/data")
+    token_filename = os.environ.get("TOKEN_FILENAME", "oauth_tokens.json")
+    # Ensure directory exists
+    os.makedirs(token_dir, exist_ok=True)
+    # Construct full path
+    token_path = os.path.join(token_dir, token_filename)
+    try:
+        # Import the upstream module and patch the TOKEN_FILE constant
+        import importlib
+        token_storage = importlib.import_module("token_storage")
+        token_storage.TOKEN_FILE = token_path
+    except Exception:
+        # If import fails (should not happen), do nothing
+        pass
 
 
 def _find_upstream_file(filename: str) -> str:
@@ -135,8 +168,16 @@ _set_working_directory()
 
 _configure_redirect_uri()
 
-# Create a FastAPI instance for the wrapper
-app = FastAPI(title="Basecamp MCP (Railway Wrapper)")
+_configure_token_storage()
+
+# Create a FastAPI instance for the wrapper.
+#
+# Set `redirect_slashes=False` so that routes mounted without a trailing slash
+# do not automatically redirect to the slash version.  This avoids the 307
+# Temporary Redirect that otherwise occurs when clients request `/mcp` (without
+# trailing slash).  See FastAPI docs and related MCP discussions for context
+#【371287631271617†L108-L110】.
+app = FastAPI(title="Basecamp MCP (Railway Wrapper)", redirect_slashes=False)
 
 # Mount the upstream MCP HTTP application
 mcp_instance = _load_fastmcp()
@@ -150,6 +191,19 @@ elif hasattr(mcp_instance, "http_app"):
     app.mount("/mcp", mcp_instance.http_app())
 else:
     raise RuntimeError("Upstream FastMCP instance does not provide a HTTP app (no streamable_http_app/http_app)")
+
+# Provide a handler for trailing slash on the MCP route.  If a client requests
+# `/mcp/` instead of `/mcp`, FastAPI will no longer redirect automatically
+# because we disabled redirect_slashes.  Define an explicit redirect to
+# ensure both variants work and the underlying ASGI app receives the request
+# correctly.  This avoids confusion with 404s when clients include the slash.
+@app.api_route("/mcp/", methods=["GET", "POST", "DELETE", "OPTIONS", "HEAD", "PUT", "PATCH"])
+async def mcp_trailing_slash(request: Request) -> RedirectResponse:
+    # Preserve query parameters and method by redirecting with the same path
+    # minus the trailing slash.  Use a 307 temporary redirect to preserve
+    # request method for POST/PUT/DELETE.  See discussions on FastMCP
+    # routing behaviour: always use /mcp/ to prevent header stripping【371287631271617†L108-L110】.
+    return RedirectResponse(url="/mcp" + ("?" + request.url.query if request.url.query else ""), status_code=307)
 
 # Mount the upstream OAuth routes on /oauth if present
 oauth_app = _load_oauth_app()
