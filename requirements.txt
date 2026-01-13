@@ -3,6 +3,17 @@ uvicorn[standard]==0.30.6
 pydantic-settings==2.7.1
 requests==2.32.3
 
+# Upstream dependencies
+python-dotenv==1.0.0
+anyio>=4.0.0
+httpx>=0.25.0
+mcp[cli]>=1.2.0
+
+# Flask is required because the upstream OAuth app is a Flask WSGI application.
+# We wrap it in WSGIMiddleware when mounting it into FastAPI.
+flask==2.3.3
+flask-cors==4.0.0
+
 # The upstream Basecamp‑MCP‑Server project is cloned directly in the
 # Dockerfile rather than installed via pip.  Installing it as a pip
 # dependency fails because the repository does not provide a correct

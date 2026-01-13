@@ -51,6 +51,24 @@ def _set_working_directory() -> None:
     os.makedirs(token_dir, exist_ok=True)
     os.chdir(token_dir)
 
+# Compute and set the BASECAMP_REDIRECT_URI environment variable if not
+# explicitly provided.  The upstream OAuth app expects this value to
+# match the redirect URL registered with Basecamp.  If a public base
+# URL (PUBLIC_BASE_URL) has been supplied, derive the callback URL
+# automatically by appending "/oauth/callback".  This allows users to
+# configure only the PUBLIC_BASE_URL in Railway.
+def _configure_redirect_uri() -> None:
+    # Only set the redirect URI if it hasn't been defined and a public
+    # base URL is available.  Do nothing if either condition is false.
+    if os.environ.get("BASECAMP_REDIRECT_URI"):
+        return
+    public_base = os.environ.get("PUBLIC_BASE_URL")
+    if not public_base:
+        return
+    # Ensure no trailing slash on the base URL to avoid double slashes.
+    base = public_base.rstrip("/")
+    os.environ["BASECAMP_REDIRECT_URI"] = f"{base}/oauth/callback"
+
 
 def _find_upstream_file(filename: str) -> str:
     """Search sys.path for a file belonging to the upstream package.
@@ -108,6 +126,8 @@ def _load_oauth_app() -> Optional[object]:
 
 # Configure environment and working directory up front
 _set_working_directory()
+
+_configure_redirect_uri()
 
 # Create a FastAPI instance for the wrapper
 app = FastAPI(title="Basecamp MCP (Railway Wrapper)")

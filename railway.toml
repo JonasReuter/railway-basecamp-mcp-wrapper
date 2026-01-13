@@ -2,5 +2,6 @@
 builder = "DOCKERFILE"
 
 [deploy]
-startCommand = "uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+# Do not override the start command. Railway will use the CMD from the Dockerfile
+# (which invokes uvicorn via bash and expands the PORT environment variable correctly).
 restartPolicyType = "ON_FAILURE"
