@@ -192,16 +192,12 @@ _configure_token_storage()
 mcp_instance = _load_fastmcp()
 
 def _create_mcp_app() -> object:
-    """Create the FastMCP ASGI app with the correct path.
+    """Create the FastMCP ASGI app.
 
     The upstream FastMCP instance exposes two methods for HTTP deployment:
-    `http_app()` and the older `streamable_http_app()`.  Both methods accept
-    optional keyword arguments, including `path`, which controls the URL
-    prefix that the MCP routes will be served under.  The default value for
-    `path` is "/mcp", which would result in a duplicate prefix when the
-    app is mounted at `/mcp`.  Therefore we always override `path` with
-    "/" (or an empty string) to ensure the returned app serves its routes
-    from the root.
+    `http_app()` and the older `streamable_http_app()`. We call these without
+    any path parameter to let FastMCP use its default path (/mcp), and then
+    we mount the entire app at root (/) so the final URL is /mcp.
 
     Returns the ASGI application.
     """
@@ -210,30 +206,14 @@ def _create_mcp_app() -> object:
     # v2.14.0.  Fall back to `streamable_http_app` if necessary.
     if hasattr(mcp_instance, "http_app"):
         logger.info("Using mcp_instance.http_app()")
-        try:
-            app = mcp_instance.http_app(path="")
-            logger.info("Successfully created MCP app with path=''")
-            return app
-        except TypeError as e:
-            logger.warning(f"http_app() doesn't accept path parameter: {e}")
-            # Older versions of FastMCP may not accept the `path` kwarg.
-            # In that case, we fall back to the default behaviour, which
-            # implicitly uses `/mcp` as the path.  The double prefix will
-            # still occur, but this branch maintains backward compatibility.
-            app = mcp_instance.http_app()
-            logger.info("Created MCP app with default path")
-            return app
+        app = mcp_instance.http_app()
+        logger.info("Created MCP app with default path")
+        return app
     if hasattr(mcp_instance, "streamable_http_app"):
         logger.info("Using mcp_instance.streamable_http_app()")
-        try:
-            app = mcp_instance.streamable_http_app(path="")
-            logger.info("Successfully created MCP app with path=''")
-            return app
-        except TypeError as e:
-            logger.warning(f"streamable_http_app() doesn't accept path parameter: {e}")
-            app = mcp_instance.streamable_http_app()
-            logger.info("Created MCP app with default path")
-            return app
+        app = mcp_instance.streamable_http_app()
+        logger.info("Created MCP app with default path")
+        return app
     
     # Last resort: check if mcp_instance itself is already an ASGI app
     if hasattr(mcp_instance, "__call__") and hasattr(mcp_instance, "routes"):
@@ -257,27 +237,6 @@ except Exception as e:
 # started and shutdown as part of the mounted app's lifecycle.
 app = FastAPI(title="Basecamp MCP (Railway Wrapper)")
 
-# Mount the MCP app at '/mcp'.  With the path override above, the MCP
-# endpoints will be available at `/mcp` (no duplicate prefix).  Starlette
-# will automatically redirect `/mcp` to `/mcp/` when redirect_slashes is
-# enabled (default).  Clients should follow this redirect, but for
-# compatibility we accept that some POST requests may be redirected via
-# 307; the MCP app will handle them correctly.
-try:
-    app.mount("/mcp", mcp_app)
-    logger.info("MCP app mounted at /mcp")
-except Exception as e:
-    logger.error(f"Failed to mount MCP app: {e}", exc_info=True)
-    raise
-
-
-# Mount the upstream OAuth routes on /oauth if present
-oauth_app = _load_oauth_app()
-if oauth_app is not None:
-    # The upstream OAuth app is a Flask (WSGI) application.  FastAPI requires
-    # an ASGI interface, so wrap it with WSGIMiddleware before mounting.
-    app.mount("/oauth", WSGIMiddleware(oauth_app))
-
 
 @app.get("/health")
 def health() -> dict[str, bool]:
@@ -296,3 +255,24 @@ def debug_info() -> dict:
         "has_http_app": hasattr(mcp_instance, "http_app"),
         "has_streamable_http_app": hasattr(mcp_instance, "streamable_http_app"),
     }
+
+
+# Mount the MCP app at root (/). The MCP app itself uses /mcp as its path,
+# so by mounting at root, the endpoints will be available at /mcp.
+# This avoids the double-prefix problem (/mcp/mcp) that would occur if
+# we mounted at /mcp.
+# NOTE: This must come AFTER defining our own routes (/health, /debug/info)
+# so they don't get shadowed by the mounted app.
+try:
+    app.mount("/", mcp_app)
+    logger.info("MCP app mounted at / (endpoints available at /mcp)")
+except Exception as e:
+    logger.error(f"Failed to mount MCP app: {e}", exc_info=True)
+    raise
+
+# Mount the upstream OAuth routes on /oauth if present
+oauth_app = _load_oauth_app()
+if oauth_app is not None:
+    # The upstream OAuth app is a Flask (WSGI) application.  FastAPI requires
+    # an ASGI interface, so wrap it with WSGIMiddleware before mounting.
+    app.mount("/oauth", WSGIMiddleware(oauth_app))
