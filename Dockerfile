@@ -17,6 +17,21 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+# Clone the upstream Basecamp MCP server.  We clone the repository rather
+# than installing it via pip because the project is not published as a
+# proper Python package and pip installation fails due to missing
+# metadata.  Cloning here makes the source available for our wrapper
+# at runtime.  We place it under /opt so that it is outside the app code
+# tree and can be found via PYTHONPATH.
+RUN git clone https://github.com/georgeantonopoulos/Basecamp-MCP-Server.git /opt/basecamp-mcp
+
+# Set PYTHONPATH so that the wrapper can import modules from the upstream
+# repository.  Without this, our dynamic module loader would not find
+# `basecamp_fastmcp.py` and `oauth_app.py` in sys.path.  Note that
+# $PYTHONPATH may be unset; in that case the colon prefix gracefully
+# expands to an empty string.
+ENV PYTHONPATH=/opt/basecamp-mcp:${PYTHONPATH}
+
 # Copy and install Python dependencies first.  Doing this as a separate
 # layer allows Docker to cache the dependency installation even when
 # your application code changes.

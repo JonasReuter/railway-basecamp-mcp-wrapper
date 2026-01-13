@@ -3,8 +3,8 @@ uvicorn[standard]==0.30.6
 pydantic-settings==2.7.1
 requests==2.32.3
 
-# Install the upstream Basecamp MCP server directly from GitHub.  By using
-# the git+https syntax pip will clone the repository and install it as a
-# Python package at build time.  This keeps your wrapper repo lean and
-# avoids duplicating any logic from the upstream project.
-git+https://github.com/georgeantonopoulos/Basecamp-MCP-Server.git
+# The upstream Basecamp‑MCP‑Server project is cloned directly in the
+# Dockerfile rather than installed via pip.  Installing it as a pip
+# dependency fails because the repository does not provide a correct
+# Python package (missing egg‑info).  See the Dockerfile for the
+# clone/install logic.
