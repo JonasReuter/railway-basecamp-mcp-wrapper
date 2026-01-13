@@ -7,6 +7,16 @@ ENV PYTHONUNBUFFERED=1
 # Create application directory
 WORKDIR /app
 
+
+# Install system packages required to build and install the upstream package.
+# The upstream repository is installed from GitHub via pip, which requires
+# `git` to be present in the container.  We also install `build-essential`
+# so that any compiled dependencies can be built.  These packages are
+# removed at the end to keep the image slim.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy and install Python dependencies first.  Doing this as a separate
 # layer allows Docker to cache the dependency installation even when
 # your application code changes.
