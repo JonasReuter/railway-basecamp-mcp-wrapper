@@ -183,13 +183,15 @@ mcp_instance = _load_fastmcp()
 # The upstream FastMCP instance exposes its ASGI app via either
 # `streamable_http_app` (preferred) or `http_app`.  If neither exists we
 # cannot serve HTTP.
-if hasattr(mcp_instance, "streamable_http_app"):
-    # Mount at '/mcp/' so both '/mcp' and '/mcp/' are served when redirect_slashes=True.
-    app.mount("/mcp/", mcp_instance.streamable_http_app())
-elif hasattr(mcp_instance, "http_app"):
-    app.mount("/mcp/", mcp_instance.http_app())
+if hasattr(mcp_instance, "http_app"):
+    # Mount the HTTP app at '/mcp'.  With redirect_slashes enabled (default), both
+    # '/mcp' and '/mcp/' will be routed correctly to the MCP server.
+    app.mount("/mcp", mcp_instance.http_app())
+elif hasattr(mcp_instance, "streamable_http_app"):
+    # Fallback to streamable HTTP if http_app is not available.  Mount at '/mcp'.
+    app.mount("/mcp", mcp_instance.streamable_http_app())
 else:
-    raise RuntimeError("Upstream FastMCP instance does not provide a HTTP app (no streamable_http_app/http_app)")
+    raise RuntimeError("Upstream FastMCP instance does not provide a HTTP app (no http_app/streamable_http_app)")
 
 
 # Mount the upstream OAuth routes on /oauth if present
