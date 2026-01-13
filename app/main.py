@@ -68,7 +68,12 @@ def _configure_redirect_uri() -> None:
         return
     # Ensure no trailing slash on the base URL to avoid double slashes.
     base = public_base.rstrip("/")
-    os.environ["BASECAMP_REDIRECT_URI"] = f"{base}/oauth/callback"
+    # The upstream OAuth app defines its callback route at '/auth/callback' (relative
+    # to its mount path).  Because we mount the Flask app at '/oauth', the
+    # effective callback URL is '/oauth/auth/callback'.  See upstream
+    # `oauth_app.py` for route definitions【712093837881706†L190-L263】.  We
+    # therefore compute the redirect URI accordingly.
+    os.environ["BASECAMP_REDIRECT_URI"] = f"{base}/oauth/auth/callback"
 
 
 def _find_upstream_file(filename: str) -> str:
