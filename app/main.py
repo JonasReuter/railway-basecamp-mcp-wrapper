@@ -168,30 +168,74 @@ _configure_redirect_uri()
 
 _configure_token_storage()
 
-# Create a FastAPI instance for the wrapper.
-#
-# Leave `redirect_slashes` at its default (True).  When we mount the upstream
-# MCP app at a path ending with a slash ("/mcp/"), FastAPI will serve both
-# "/mcp" and "/mcp/" without returning a 307 Temporary Redirect.  This avoids
-# 404 errors when clients omit or include the trailing slash and ensures
-# compatibility with tools expecting either form.
-app = FastAPI(title="Basecamp MCP (Railway Wrapper)")
 
+
+# ---------------------------------------------------------------------------
 # Mount the upstream MCP HTTP application
+#
+# By default FastMCP's `http_app()` returns an ASGI application that serves
+# the MCP API on the `/mcp/` prefix (see the FastMCP HTTP deployment docs:
+#   https://gofastmcp.com/deployment/http).  If we naively mount this app
+# under `/mcp` we end up with a doubled path (`/mcp/mcp/`), which causes
+# 404 errors.  To avoid this, we explicitly set the `path` parameter to
+# "/" (empty prefix) so that the returned ASGI app serves the MCP API at
+# its root.  When mounted at `/mcp`, the final URL becomes `/mcp/` (with
+# Starlette automatically handling the redirect from `/mcp` to `/mcp/`).
 mcp_instance = _load_fastmcp()
 
-# The upstream FastMCP instance exposes its ASGI app via either
-# `streamable_http_app` (preferred) or `http_app`.  If neither exists we
-# cannot serve HTTP.
-if hasattr(mcp_instance, "http_app"):
-    # Mount the HTTP app at '/mcp'.  With redirect_slashes enabled (default), both
-    # '/mcp' and '/mcp/' will be routed correctly to the MCP server.
-    app.mount("/mcp", mcp_instance.http_app())
-elif hasattr(mcp_instance, "streamable_http_app"):
-    # Fallback to streamable HTTP if http_app is not available.  Mount at '/mcp'.
-    app.mount("/mcp", mcp_instance.streamable_http_app())
-else:
-    raise RuntimeError("Upstream FastMCP instance does not provide a HTTP app (no http_app/streamable_http_app)")
+def _create_mcp_app() -> object:
+    """Create the FastMCP ASGI app with the correct path and lifespan.
+
+    The upstream FastMCP instance exposes two methods for HTTP deployment:
+    `http_app()` and the older `streamable_http_app()`.  Both methods accept
+    optional keyword arguments, including `path`, which controls the URL
+    prefix that the MCP routes will be served under.  The default value for
+    `path` is "/mcp", which would result in a duplicate prefix when the
+    app is mounted at `/mcp`.  Therefore we always override `path` with
+    "/" (or an empty string) to ensure the returned app serves its routes
+    from the root.
+
+    Returns the ASGI application and its lifespan attribute.
+    """
+    # Prefer the modern `http_app` if available.  It implements the
+    # Streamable HTTP transport with SSE polling support as of FastMCP
+    # v2.14.0.  Fall back to `streamable_http_app` if necessary.
+    if hasattr(mcp_instance, "http_app"):
+        try:
+            return mcp_instance.http_app(path="/")
+        except TypeError:
+            # Older versions of FastMCP may not accept the `path` kwarg.
+            # In that case, we fall back to the default behaviour, which
+            # implicitly uses `/mcp` as the path.  The double prefix will
+            # still occur, but this branch maintains backward compatibility.
+            return mcp_instance.http_app()
+    if hasattr(mcp_instance, "streamable_http_app"):
+        try:
+            return mcp_instance.streamable_http_app(path="/")
+        except TypeError:
+            return mcp_instance.streamable_http_app()
+    raise RuntimeError(
+        "Upstream FastMCP instance does not provide a HTTP app (no http_app/streamable_http_app)"
+    )
+
+# Instantiate the MCP ASGI app.  We call this function only once so that
+# its lifespan can be reused by the parent FastAPI application.
+mcp_app = _create_mcp_app()
+
+# Create the parent FastAPI app with the MCP app's lifespan.  Passing the
+# lifespan ensures that FastMCP's session manager is properly started and
+# shutdown alongside the wrapper.  Without this, requests to the MCP
+# endpoints may return 404 because the session manager has not been
+# initialized (see FastMCP docs on mounting MCP servers【222704054020368†L530-L543】).
+app = FastAPI(title="Basecamp MCP (Railway Wrapper)", lifespan=mcp_app.lifespan)
+
+# Mount the MCP app at '/mcp'.  With the path override above, the MCP
+# endpoints will be available at `/mcp` (no duplicate prefix).  Starlette
+# will automatically redirect `/mcp` to `/mcp/` when redirect_slashes is
+# enabled (default).  Clients should follow this redirect, but for
+# compatibility we accept that some POST requests may be redirected via
+# 307; the MCP app will handle them correctly.
+app.mount("/mcp", mcp_app)
 
 
 # Mount the upstream OAuth routes on /oauth if present
