@@ -33,12 +33,17 @@ from upstream updates without having to port code manually.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import os
 import sys
 from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.wsgi import WSGIMiddleware
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 def _set_working_directory() -> None:
@@ -102,9 +107,10 @@ def _configure_token_storage() -> None:
         import importlib
         token_storage = importlib.import_module("token_storage")
         token_storage.TOKEN_FILE = token_path
-    except Exception:
-        # If import fails (should not happen), do nothing
-        pass
+        logger.info(f"Token storage configured at: {token_path}")
+    except Exception as e:
+        # If import fails, log the error for debugging
+        logger.warning(f"Could not configure token storage: {e}")
 
 
 def _find_upstream_file(filename: str) -> str:
@@ -139,12 +145,14 @@ def _load_module(path: str, name: str) -> object:
 def _load_fastmcp() -> object:
     """Locate and load the upstream FastMCP server."""
     mcp_path = _find_upstream_file("basecamp_fastmcp.py")
+    logger.info(f"Loading FastMCP from: {mcp_path}")
     module = _load_module(mcp_path, "basecamp_fastmcp_wrapper")
     # The upstream file typically defines either `mcp` or `server` holding
     # the FastMCP instance.  Search for common attribute names.
     for name in ("mcp", "server", "app"):
         mcp_obj = getattr(module, name, None)
         if mcp_obj is not None:
+            logger.info(f"Found FastMCP instance as '{name}'")
             return mcp_obj
     raise RuntimeError(
         "The upstream FastMCP file does not expose an MCP instance. Expected one of 'mcp', 'server' or 'app'."
@@ -184,7 +192,7 @@ _configure_token_storage()
 mcp_instance = _load_fastmcp()
 
 def _create_mcp_app() -> object:
-    """Create the FastMCP ASGI app with the correct path and lifespan.
+    """Create the FastMCP ASGI app with the correct path.
 
     The upstream FastMCP instance exposes two methods for HTTP deployment:
     `http_app()` and the older `streamable_http_app()`.  Both methods accept
@@ -195,32 +203,54 @@ def _create_mcp_app() -> object:
     "/" (or an empty string) to ensure the returned app serves its routes
     from the root.
 
-    Returns the ASGI application and its lifespan attribute.
+    Returns the ASGI application.
     """
     # Prefer the modern `http_app` if available.  It implements the
     # Streamable HTTP transport with SSE polling support as of FastMCP
     # v2.14.0.  Fall back to `streamable_http_app` if necessary.
     if hasattr(mcp_instance, "http_app"):
+        logger.info("Using mcp_instance.http_app()")
         try:
-            return mcp_instance.http_app(path="/")
-        except TypeError:
+            app = mcp_instance.http_app(path="")
+            logger.info("Successfully created MCP app with path=''")
+            return app
+        except TypeError as e:
+            logger.warning(f"http_app() doesn't accept path parameter: {e}")
             # Older versions of FastMCP may not accept the `path` kwarg.
             # In that case, we fall back to the default behaviour, which
             # implicitly uses `/mcp` as the path.  The double prefix will
             # still occur, but this branch maintains backward compatibility.
-            return mcp_instance.http_app()
+            app = mcp_instance.http_app()
+            logger.info("Created MCP app with default path")
+            return app
     if hasattr(mcp_instance, "streamable_http_app"):
+        logger.info("Using mcp_instance.streamable_http_app()")
         try:
-            return mcp_instance.streamable_http_app(path="/")
-        except TypeError:
-            return mcp_instance.streamable_http_app()
+            app = mcp_instance.streamable_http_app(path="")
+            logger.info("Successfully created MCP app with path=''")
+            return app
+        except TypeError as e:
+            logger.warning(f"streamable_http_app() doesn't accept path parameter: {e}")
+            app = mcp_instance.streamable_http_app()
+            logger.info("Created MCP app with default path")
+            return app
+    
+    # Last resort: check if mcp_instance itself is already an ASGI app
+    if hasattr(mcp_instance, "__call__") and hasattr(mcp_instance, "routes"):
+        logger.info("mcp_instance appears to be a FastAPI/Starlette app itself")
+        return mcp_instance
+    
     raise RuntimeError(
         "Upstream FastMCP instance does not provide a HTTP app (no http_app/streamable_http_app)"
     )
 
-# Instantiate the MCP ASGI app.  We call this function only once so that
-# its lifespan can be reused by the parent FastAPI application.
-mcp_app = _create_mcp_app()
+# Instantiate the MCP ASGI app.
+try:
+    mcp_app = _create_mcp_app()
+    logger.info(f"MCP app created successfully: {type(mcp_app)}")
+except Exception as e:
+    logger.error(f"Failed to create MCP app: {e}", exc_info=True)
+    raise
 
 # Create the parent FastAPI app without a lifespan. The MCP app will manage
 # its own lifespan when mounted. FastMCP's session manager will be properly
@@ -233,7 +263,12 @@ app = FastAPI(title="Basecamp MCP (Railway Wrapper)")
 # enabled (default).  Clients should follow this redirect, but for
 # compatibility we accept that some POST requests may be redirected via
 # 307; the MCP app will handle them correctly.
-app.mount("/mcp", mcp_app)
+try:
+    app.mount("/mcp", mcp_app)
+    logger.info("MCP app mounted at /mcp")
+except Exception as e:
+    logger.error(f"Failed to mount MCP app: {e}", exc_info=True)
+    raise
 
 
 # Mount the upstream OAuth routes on /oauth if present
@@ -248,3 +283,16 @@ if oauth_app is not None:
 def health() -> dict[str, bool]:
     """Simple health endpoint used by Railway to determine service readiness."""
     return {"ok": True}
+
+
+@app.get("/debug/info")
+def debug_info() -> dict:
+    """Debug endpoint to check what's loaded."""
+    return {
+        "mcp_instance_type": str(type(mcp_instance)),
+        "mcp_instance_attrs": [attr for attr in dir(mcp_instance) if not attr.startswith("_")],
+        "mcp_app_type": str(type(mcp_app)),
+        "mcp_app_attrs": [attr for attr in dir(mcp_app) if not attr.startswith("_")],
+        "has_http_app": hasattr(mcp_instance, "http_app"),
+        "has_streamable_http_app": hasattr(mcp_instance, "streamable_http_app"),
+    }
