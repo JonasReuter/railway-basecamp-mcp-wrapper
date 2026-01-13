@@ -247,32 +247,46 @@ def health() -> dict[str, bool]:
 @app.get("/debug/info")
 def debug_info() -> dict:
     """Debug endpoint to check what's loaded."""
+    mcp_routes = []
+    if hasattr(mcp_app, "routes"):
+        mcp_routes = [{"path": getattr(r, "path", "unknown"), "name": getattr(r, "name", "unknown")} for r in mcp_app.routes]
+    
     return {
         "mcp_instance_type": str(type(mcp_instance)),
-        "mcp_instance_attrs": [attr for attr in dir(mcp_instance) if not attr.startswith("_")],
         "mcp_app_type": str(type(mcp_app)),
-        "mcp_app_attrs": [attr for attr in dir(mcp_app) if not attr.startswith("_")],
+        "mcp_routes": mcp_routes,
         "has_http_app": hasattr(mcp_instance, "http_app"),
         "has_streamable_http_app": hasattr(mcp_instance, "streamable_http_app"),
     }
 
 
-# Mount the MCP app at root (/). The MCP app itself uses /mcp as its path,
-# so by mounting at root, the endpoints will be available at /mcp.
-# This avoids the double-prefix problem (/mcp/mcp) that would occur if
-# we mounted at /mcp.
-# NOTE: This must come AFTER defining our own routes (/health, /debug/info)
-# so they don't get shadowed by the mounted app.
-try:
-    app.mount("/", mcp_app)
-    logger.info("MCP app mounted at / (endpoints available at /mcp)")
-except Exception as e:
-    logger.error(f"Failed to mount MCP app: {e}", exc_info=True)
-    raise
-
-# Mount the upstream OAuth routes on /oauth if present
+# Mount the upstream OAuth routes on /oauth if present  
 oauth_app = _load_oauth_app()
 if oauth_app is not None:
     # The upstream OAuth app is a Flask (WSGI) application.  FastAPI requires
     # an ASGI interface, so wrap it with WSGIMiddleware before mounting.
-    app.mount("/oauth", WSGIMiddleware(oauth_app))
+    try:
+        app.mount("/oauth", WSGIMiddleware(oauth_app))
+        logger.info("OAuth app mounted at /oauth")
+    except Exception as e:
+        logger.warning(f"Failed to mount OAuth app: {e}")
+
+
+# Mount the MCP sub-application. Since FastMCP creates routes with the /mcp prefix
+# by default, we need to mount it at root so those routes are accessible.
+# However, Starlette's mount() at root shadows all other routes.
+# The solution is to add MCP routes directly to our app's routing table.
+try:
+    # Instead of mounting, add the routes directly
+    if hasattr(mcp_app, "routes"):
+        # Import the routes directly into our app
+        for route in mcp_app.routes:
+            app.routes.append(route)
+        logger.info(f"Added {len(mcp_app.routes)} routes from MCP app directly")
+    else:
+        # Fallback: mount at root, but this will shadow our routes
+        app.mount("/", mcp_app)
+        logger.info("MCP app mounted at / as fallback")
+except Exception as e:
+    logger.error(f"Failed to integrate MCP app: {e}", exc_info=True)
+    raise
